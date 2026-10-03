@@ -116,7 +116,7 @@
     if(hover){const x=g.x(hover.ts);ctx.strokeStyle="#94a3b175";ctx.lineWidth=1;ctx.setLineDash([3,4]);ctx.beginPath();ctx.moveTo(x,g.top);ctx.lineTo(x,g.height-g.bottom);ctx.stroke();ctx.setLineDash([]);}
     ctx.restore();
     const sampled=data.points.length;
-    canvas.setAttribute("aria-label",`10-second median response time over ${range.selectedOptions[0].text.toLowerCase()}. ${sampled} graph points. ${data.bands.filter(e=>e.kind==="offline").length} check failures in view. Current response time ${data.latest?.latency==null?"unavailable":Math.round(data.latest.latency)+" milliseconds"}.`);
+    canvas.setAttribute("aria-label",`Smoothed response time over ${range.selectedOptions[0].text.toLowerCase()}. ${sampled} graph points. ${data.bands.filter(e=>e.kind==="offline").length} check failures in view. Current response time ${data.latest?.latency==null?"unavailable":Math.round(data.latest.latency)+" milliseconds"}.`);
   }
 
   canvas.addEventListener("pointermove",event=>{
@@ -126,7 +126,7 @@
     let nearest=data.points[0];for(const point of data.points)if(Math.abs(point.ts-ts)<Math.abs(nearest.ts-ts))nearest=point;
     if(Math.abs(nearest.ts-ts)>Math.max(data.step*2,Number(range.value)/90)){$("tooltip").hidden=true;hover=null;draw();return;}
     hover=nearest;const tip=$("tooltip");const issue=data.bands.find(e=>nearest.ts>=e.start&&nearest.ts<=(e.end??data.now));
-    tip.replaceChildren(el("small",`${date(nearest.ts)} · ${time(nearest.ts,true)}`),document.createTextNode(issue?.reason??(nearest.smooth==null?"No response":`${Math.round(nearest.smooth)} ms · 10-second median`)));
+    tip.replaceChildren(el("small",`${date(nearest.ts)} · ${time(nearest.ts,true)}`),document.createTextNode(issue?.reason??(nearest.smooth==null?"No response":`${Math.round(nearest.smooth)} ms · Smoothed response time`)));
     tip.hidden=false;tip.style.left=`${Math.max(0,Math.min(g.width-tip.offsetWidth,px+12))}px`;tip.style.top=`${Math.max(0,event.clientY-rect.top-55)}px`;draw();
   });
   canvas.addEventListener("pointerleave",()=>{hover=null;$("tooltip").hidden=true;draw();});

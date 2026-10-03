@@ -66,7 +66,9 @@ class DisplayMetricsTests(unittest.TestCase):
         rows.append({"ts": 40, "state": "online", "latency": 100})
         values = smooth_latency(rows, 1, 5)
         self.assertNotIn(4, values)
-        self.assertEqual(values[19], 80)
+        self.assertGreater(values[19], 20)
+        self.assertLess(values[19], 80)
+        self.assertLess(max(abs(values[t] - values[t-1]) for t in range(6,20)), 5)
         self.assertEqual(values[40], 100)
 
     def test_packet_loss_excludes_unknown_old_and_stale_measurements(self):

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """A loopback-only network monitor, using only the Python standard library."""
 import argparse
+import math
 from collections import deque
 from statistics import median
 import concurrent.futures
@@ -130,22 +131,28 @@ def classify(checks, gateway_ok, dns_ok, route):
 
 
 def smooth_latency(rows, step, start):
-    """Trailing ten-second median, reset at failures and monitoring gaps."""
+    """Ten-second median followed by a 15-second exponential trend; preserve gaps."""
     history = deque()
     buckets = {}
     previous = None
+    trend = None
     for row in rows:
         ts = row["ts"]
         if previous is not None and ts - previous > 3.5:
             history.clear()
+            trend = None
         while history and history[0][0] <= ts - 10:
             history.popleft()
         if row["state"] in ("offline", "blocked") or row["latency"] is None:
             history.clear()
             value = None
+            trend = None
         else:
             history.append((ts, row["latency"]))
-            value = median(item[1] for item in history)
+            center = median(item[1] for item in history)
+            alpha = 1 - math.exp(-max(0, ts - previous) / 15) if previous is not None else 1
+            trend = center if trend is None else trend + alpha * (center - trend)
+            value = trend
         if ts >= start:
             buckets[int(ts / step)] = value
         previous = ts
@@ -286,7 +293,7 @@ class Store:
                      WHEN SUM(state='dns')>0 THEN 'dns'
                      WHEN SUM(state='blocked')>0 THEN 'blocked' ELSE 'online' END AS state
                 FROM samples WHERE ts >= ? GROUP BY CAST(ts / ? AS INTEGER) ORDER BY ts""", (start, step)).fetchall()
-            raw = self.db.execute("SELECT ts,state,latency FROM samples WHERE ts>=? ORDER BY ts", (start - 10,)).fetchall()
+            raw = self.db.execute("SELECT ts,state,latency FROM samples WHERE ts>=? ORDER BY ts", (start - 90,)).fetchall()
             smoothed = smooth_latency(raw, step, start)
             points = [{**dict(point), "smooth": smoothed.get(int(point["ts"] / step))} for point in points]
             loss = packet_loss(self.db.execute("SELECT ts,completed,evidence FROM diagnostics WHERE ts>=? ORDER BY ts", (now - 60,)).fetchall(), now)
@@ -309,7 +316,7 @@ class Store:
                 "drop_count": drops, "dns_count": issues,
                 "uptime": round(100 * (stats["good"] or 0) / stats["n"], 2) if stats["n"] else None,
                 "average_latency": round(stats["avg_latency"], 1) if stats["avg_latency"] is not None else None,
-                "smoothing_seconds": 10, "packet_loss": loss,
+                "smoothing_seconds": 10, "trend_seconds": 15, "packet_loss": loss,
                 "interval": INTERVAL, "targets": [name for name, _ in TARGETS]}
 
 
