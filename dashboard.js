@@ -83,7 +83,7 @@
     const left=51,right=17,top=22,bottom=36;
     const end=data?.now??Date.now()/1000, start=end-Number(range.value);
     const maxLatency=Math.max(0,...(data?.points??[]).map(p=>p.smooth??0));
-    const ymax=Math.max(100,Math.ceil(maxLatency/50)*50);
+    const ymax=Math.max(200,Math.ceil(maxLatency/100)*100);
     return {width,height,left,right,top,bottom,start,end,ymax,x:ts=>left+(ts-start)/(end-start)*(width-left-right),y:ms=>height-bottom-ms/ymax*(height-top-bottom)};
   }
 
@@ -92,7 +92,7 @@
     canvas.width=Math.round(g.width*dpr);canvas.height=Math.round(g.height*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);
     ctx.clearRect(0,0,g.width,g.height);ctx.font="12px -apple-system, BlinkMacSystemFont, sans-serif";
     ctx.textBaseline="middle";
-    for(let n=0;n<=4;n++){const value=g.ymax*n/4,y=g.y(value);ctx.strokeStyle=colors.grid;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(g.left,y);ctx.lineTo(g.width-g.right,y);ctx.stroke();ctx.fillStyle=colors.text;ctx.textAlign="right";ctx.fillText(String(Math.round(value)),g.left-11,y);}
+    for(let value=0;value<=g.ymax;value+=100){const y=g.y(value);ctx.strokeStyle=colors.grid;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(g.left,y);ctx.lineTo(g.width-g.right,y);ctx.stroke();ctx.fillStyle=colors.text;ctx.textAlign="right";ctx.fillText(String(Math.round(value)),g.left-11,y);}
     ctx.fillStyle=colors.text;ctx.textAlign="left";ctx.fillText("ms",g.left-27,8);
     for(let n=0;n<=4;n++){const ts=g.start+(g.end-g.start)*n/4,x=g.x(ts);ctx.textAlign=n===0?"left":n===4?"right":"center";ctx.fillText(time(ts),x,g.height-13);}
     if(!data)return;
