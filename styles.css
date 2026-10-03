@@ -4,3 +4,5 @@
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
 .loss-summary{margin:8px 30px 0;padding:14px 0;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:.8125rem;color:var(--muted)}.loss-label{display:block;margin-bottom:7px}.loss-values{display:flex;gap:24px;flex-wrap:wrap}.loss-target strong{color:var(--text);font-variant-numeric:tabular-nums;margin-left:4px;font-weight:500}#loss-note{font-size:.75rem}@media(max-width:640px){.loss-summary{margin-left:18px;margin-right:18px}.loss-values{gap:16px}}
+
+.legend .drop-key{border-radius:50%}

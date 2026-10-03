@@ -21,7 +21,7 @@ To stop: `python3 launcher.py stop` or double-click **Stop.command**.
 ## How it works
 
 - Checks Google and Cloudflare every second; both must fail to record a drop.
-- Shows a smooth response-time graph (10-second median plus a 15-second exponential trend), with failure markers at their original times. Raw checks stay saved.
+- Shows a smooth response-time graph (30-second median plus a 30-second exponential trend, displayed in 10-second steps), with red failure dots at their original times. Raw checks stay saved.
 - Shows last-minute packet loss separately for the router, Cloudflare, and Google (pings every two seconds; unanswered pings can mean loss or filtering).
 - Saves events with times, approximate durations, and recovery status.
 - Saves probe errors and runs independent internet pings and longer TCP checks to investigate failures. A responding router does not rule out Mac, Wi-Fi, router, or ISP problems.

@@ -31,11 +31,11 @@
         </div>
       </div>
       <div class="chart-bar">
-        <div class="legend"><span><i class="line-key"></i><span title="10-second median with a 15-second exponential trend. Raw failures remain visible.">Smoothed response time</span></span><span><i class="drop-key"></i>Check failure</span><span id="pause-legend"><i class="pause-key"></i>Not monitored</span></div>
+        <div class="legend"><span><i class="line-key"></i><span title="30-second median with a 30-second trend, shown in 10-second steps. Raw failures remain visible.">Smoothed response time</span></span><span><i class="drop-key"></i>Check failure</span><span id="pause-legend"><i class="pause-key"></i>Not monitored</span></div>
         <label class="range-label"><span class="sr-only">Graph time range</span><select id="window"><option value="300">Last 5 minutes</option><option value="900" selected>Last 15 minutes</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option></select></label>
       </div>
       <div class="chart-wrap" id="chart-wrap">
-        <canvas id="chart" role="img" aria-label="Network response time graph. Drops are marked in red; monitoring gaps are gray."></canvas>
+        <canvas id="chart" role="img" aria-label="Smoothed response time graph. Failed checks are red dots; DNS issues are amber dots; monitoring gaps are gray."></canvas>
         <div class="chart-empty" id="chart-empty"><span>Waiting for connection data</span></div>
         <div class="tooltip" id="tooltip" hidden></div>
       </div>

@@ -131,7 +131,7 @@ def classify(checks, gateway_ok, dns_ok, route):
 
 
 def smooth_latency(rows, step, start):
-    """Ten-second median followed by a 15-second exponential trend; preserve gaps."""
+    """Thirty-second median followed by a 30-second exponential trend; preserve gaps."""
     history = deque()
     buckets = {}
     previous = None
@@ -141,7 +141,7 @@ def smooth_latency(rows, step, start):
         if previous is not None and ts - previous > 3.5:
             history.clear()
             trend = None
-        while history and history[0][0] <= ts - 10:
+        while history and history[0][0] <= ts - 30:
             history.popleft()
         if row["state"] in ("offline", "blocked") or row["latency"] is None:
             history.clear()
@@ -150,7 +150,7 @@ def smooth_latency(rows, step, start):
         else:
             history.append((ts, row["latency"]))
             center = median(item[1] for item in history)
-            alpha = 1 - math.exp(-max(0, ts - previous) / 15) if previous is not None else 1
+            alpha = 1 - math.exp(-max(0, ts - previous) / 30) if previous is not None else 1
             trend = center if trend is None else trend + alpha * (center - trend)
             value = trend
         if ts >= start:
@@ -286,14 +286,14 @@ class Store:
         with self.lock:
             latest = self.db.execute("SELECT * FROM samples ORDER BY ts DESC LIMIT 1").fetchone()
             # Preserve the min/max envelope and worst status when grouping a long window.
-            step = max(1, int(window / 1500))
-            points = self.db.execute("""SELECT MIN(ts) AS ts, AVG(latency) AS latency,
+            step = max(10, int(window / 1500))
+            points = self.db.execute("""SELECT MAX(ts) AS ts, AVG(latency) AS latency,
                 MIN(latency) AS low, MAX(latency) AS high,
                 CASE WHEN SUM(state='offline')>0 THEN 'offline'
                      WHEN SUM(state='dns')>0 THEN 'dns'
                      WHEN SUM(state='blocked')>0 THEN 'blocked' ELSE 'online' END AS state
                 FROM samples WHERE ts >= ? GROUP BY CAST(ts / ? AS INTEGER) ORDER BY ts""", (start, step)).fetchall()
-            raw = self.db.execute("SELECT ts,state,latency FROM samples WHERE ts>=? ORDER BY ts", (start - 90,)).fetchall()
+            raw = self.db.execute("SELECT ts,state,latency FROM samples WHERE ts>=? ORDER BY ts", (start - 180,)).fetchall()
             smoothed = smooth_latency(raw, step, start)
             points = [{**dict(point), "smooth": smoothed.get(int(point["ts"] / step))} for point in points]
             loss = packet_loss(self.db.execute("SELECT ts,completed,evidence FROM diagnostics WHERE ts>=? ORDER BY ts", (now - 60,)).fetchall(), now)
@@ -316,7 +316,7 @@ class Store:
                 "drop_count": drops, "dns_count": issues,
                 "uptime": round(100 * (stats["good"] or 0) / stats["n"], 2) if stats["n"] else None,
                 "average_latency": round(stats["avg_latency"], 1) if stats["avg_latency"] is not None else None,
-                "smoothing_seconds": 10, "trend_seconds": 15, "packet_loss": loss,
+                "smoothing_seconds": 30, "trend_seconds": 30, "packet_loss": loss,
                 "interval": INTERVAL, "targets": [name for name, _ in TARGETS]}
 
 

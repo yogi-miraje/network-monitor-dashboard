@@ -83,7 +83,7 @@
     const left=51,right=17,top=22,bottom=36;
     const end=data?.now??Date.now()/1000, start=end-Number(range.value);
     const maxLatency=Math.max(0,...(data?.points??[]).map(p=>p.smooth??0));
-    const ymax=Math.max(200,Math.ceil(maxLatency/100)*100);
+    const ymax=Math.max(50,Math.ceil(maxLatency/25)*25);
     return {width,height,left,right,top,bottom,start,end,ymax,x:ts=>left+(ts-start)/(end-start)*(width-left-right),y:ms=>height-bottom-ms/ymax*(height-top-bottom)};
   }
 
@@ -92,17 +92,18 @@
     canvas.width=Math.round(g.width*dpr);canvas.height=Math.round(g.height*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);
     ctx.clearRect(0,0,g.width,g.height);ctx.font="12px -apple-system, BlinkMacSystemFont, sans-serif";
     ctx.textBaseline="middle";
-    for(let value=0;value<=g.ymax;value+=100){const y=g.y(value);ctx.strokeStyle=colors.grid;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(g.left,y);ctx.lineTo(g.width-g.right,y);ctx.stroke();ctx.fillStyle=colors.text;ctx.textAlign="right";ctx.fillText(String(Math.round(value)),g.left-11,y);}
+    for(let value=0;value<=g.ymax;value+=25){const y=g.y(value);ctx.strokeStyle=colors.grid;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(g.left,y);ctx.lineTo(g.width-g.right,y);ctx.stroke();ctx.fillStyle=colors.text;ctx.textAlign="right";ctx.fillText(String(Math.round(value)),g.left-11,y);}
     ctx.fillStyle=colors.text;ctx.textAlign="left";ctx.fillText("ms",g.left-27,8);
     for(let n=0;n<=4;n++){const ts=g.start+(g.end-g.start)*n/4,x=g.x(ts);ctx.textAlign=n===0?"left":n===4?"right":"center";ctx.fillText(time(ts),x,g.height-13);}
     if(!data)return;
     ctx.save();ctx.beginPath();ctx.rect(g.left,g.top,g.width-g.left-g.right,g.height-g.top-g.bottom);ctx.clip();
-    for(const band of data.bands){const x1=g.x(Math.max(g.start,band.start)),x2=g.x(Math.min(g.end,band.end??g.end));const w=Math.max(3,x2-x1);ctx.fillStyle=band.kind==="pause"?"#8e9aa613":band.kind==="dns"?"#eebc6815":"#ff777f19";ctx.fillRect(x1,g.top,w,g.height-g.top-g.bottom);ctx.fillStyle=band.kind==="pause"?"#8e9aa66b":band.kind==="dns"?colors.amber:colors.red;ctx.fillRect(x1,g.height-g.bottom-4,w,4);}
+    for(const band of data.bands.filter(b=>b.kind==="pause")){const x1=g.x(Math.max(g.start,band.start)),x2=g.x(Math.min(g.end,band.end??g.end));ctx.fillStyle="#8e9aa613";ctx.fillRect(x1,g.top,Math.max(3,x2-x1),g.height-g.top-g.bottom);}
+
     const segments=[];let segment=[];let previous=null;
     for(const point of data.points){
-      const broken=point.state==="offline"||point.state==="blocked"||point.smooth==null||(previous&&point.ts-previous.ts>data.step*2.5);
+      const broken=point.smooth==null||(previous&&point.ts-previous.ts>data.step*2.5);
       if(broken&&segment.length){segments.push(segment);segment=[];}
-      if(point.smooth!=null&&point.state!=="offline"&&point.state!=="blocked")segment.push(point);
+      if(point.smooth!=null)segment.push(point);
       previous=point;
     }
     if(segment.length)segments.push(segment);
@@ -111,7 +112,12 @@
       const first=part[0],last=part[part.length-1];
       ctx.beginPath();ctx.moveTo(g.x(first.ts),g.height-g.bottom);for(const p of part)ctx.lineTo(g.x(p.ts),g.y(p.smooth));ctx.lineTo(g.x(last.ts),g.height-g.bottom);ctx.closePath();ctx.fillStyle=gradient;ctx.fill();
       ctx.beginPath();part.forEach((p,i)=>i?ctx.lineTo(g.x(p.ts),g.y(p.smooth)):ctx.moveTo(g.x(p.ts),g.y(p.smooth)));ctx.strokeStyle=colors.green;ctx.lineWidth=1.75;ctx.lineJoin="round";ctx.stroke();
-      ctx.beginPath();ctx.arc(g.x(last.ts),g.y(last.smooth),3.5,0,Math.PI*2);ctx.fillStyle=colors.green;ctx.fill();
+    }
+    for(const event of data.bands.filter(b=>b.kind!=="pause"&&b.start>=g.start)){
+      const before=data.points.filter(p=>p.ts<=event.start&&p.smooth!=null).at(-1);
+      const after=data.points.find(p=>p.ts>=event.start&&p.smooth!=null);
+      const value=before&&after&&after.ts>before.ts?before.smooth+(after.smooth-before.smooth)*(event.start-before.ts)/(after.ts-before.ts):(before?.smooth??after?.smooth??0);
+      ctx.beginPath();ctx.arc(g.x(event.start),Math.min(g.height-g.bottom-5,g.y(value)),4.5,0,Math.PI*2);ctx.fillStyle=event.kind==="dns"?colors.amber:colors.red;ctx.fill();
     }
     if(hover){const x=g.x(hover.ts);ctx.strokeStyle="#94a3b175";ctx.lineWidth=1;ctx.setLineDash([3,4]);ctx.beginPath();ctx.moveTo(x,g.top);ctx.lineTo(x,g.height-g.bottom);ctx.stroke();ctx.setLineDash([]);}
     ctx.restore();
@@ -122,6 +128,8 @@
   canvas.addEventListener("pointermove",event=>{
     if(!data?.points.length)return;
     const rect=canvas.getBoundingClientRect(),g=geometry(),px=event.clientX-rect.left;
+    const marked=data.bands.find(e=>e.kind!=="pause"&&Math.abs(g.x(e.start)-px)<7);
+    if(marked){hover={ts:marked.start};const tip=$("tooltip");tip.replaceChildren(el("small",`${date(marked.start)} · ${time(marked.start,true)}`),document.createTextNode(marked.reason));tip.hidden=false;tip.style.left=`${Math.max(0,Math.min(g.width-tip.offsetWidth,px+12))}px`;tip.style.top="20px";draw();return;}
     const ts=g.start+(px-g.left)/(g.width-g.left-g.right)*(g.end-g.start);
     let nearest=data.points[0];for(const point of data.points)if(Math.abs(point.ts-ts)<Math.abs(nearest.ts-ts))nearest=point;
     if(Math.abs(nearest.ts-ts)>Math.max(data.step*2,Number(range.value)/90)){$("tooltip").hidden=true;hover=null;draw();return;}
