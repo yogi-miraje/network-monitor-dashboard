@@ -28,7 +28,7 @@
     const fresh=latest && data.now-latest.ts<4;
     const state=fresh?latest.state:"waiting";
     $("status-dot").className=`status-dot ${state}`;
-    const titles={online:"Connected",offline:"Connection dropped",dns:"DNS problem",blocked:"Monitoring blocked",waiting:"Waiting for a check"};
+    const titles={online:"Connected",offline:"Connection check failed",dns:"DNS problem",blocked:"Monitoring blocked",waiting:"Waiting for a check"};
     $("connection-title").textContent=titles[state];
     $("connection-detail").textContent=fresh?(state==="online"?"Your internet connection is responding.":latest.detail):"The monitor is running. Waiting for a fresh connection check.";
     $("latency").replaceChildren(latest?.latency!=null&&fresh?document.createTextNode(`${Math.round(latest.latency)}`):document.createTextNode("—"));
@@ -50,13 +50,14 @@
     const body=$("events-body");body.replaceChildren();
     $("events-table").hidden=!data.events.length;
     $("events-empty").hidden=Boolean(data.events.length);
-    $("events-empty").querySelector("h3").textContent="No drops recorded";
-    $("events-empty").querySelector("p").textContent="When a drop happens, its time and duration will appear here.";
+    $("events-empty").querySelector("h3").textContent="No check failures recorded";
+    $("events-empty").querySelector("p").textContent="Failed checks and monitoring gaps appear here. Causes need supporting evidence.";
     for(const event of data.events){
       const row=el("tr");
       const started=el("td",time(event.start,true));started.append(el("span",date(event.start),"event-date"));
       const span=duration((event.end??data.now)-event.start);
-      const elapsed=el("td",`${event.end_known===0?"≥ ":""}${span}`);
+      const elapsed=el("td",`${event.end_known===0?"≥ ":event.kind==="offline"?"≈ ":""}${span}`);
+      if(event.kind==="offline")elapsed.title="Approximate sampled failure interval, not a measured full internet outage duration.";
       if(event.end_known===0)elapsed.title="At least this long; recovery time is unknown because monitoring stopped.";
       const what=el("td");const reason=el("div",undefined,"event-reason");reason.append(el("i","",`event-mark ${event.kind}`),document.createTextNode(event.reason));
       what.append(reason,el("p",event.detail,"event-detail"));

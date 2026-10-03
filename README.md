@@ -22,7 +22,8 @@ To stop: `python3 launcher.py stop` or double-click **Stop.command**.
 
 - Checks Google and Cloudflare every second; both must fail to record a drop.
 - Shows one response-time graph and saved events with times, durations, and likely causes.
-- Checks DNS separately and uses router checks to help explain failures.
+- Saves probe errors and runs independent internet pings and longer TCP checks to investigate failures. A responding router does not rule out Mac, Wi-Fi, router, or ISP problems.
+- Checks DNS separately. This Mac cannot directly diagnose a VPN running on another machine.
 - Keeps running when Chrome closes. Mac sleep appears as a monitoring gap; restart the monitor after rebooting.
 - Saves history in `data/history.sqlite3`, excluded from Git. No cloud uploads.
 

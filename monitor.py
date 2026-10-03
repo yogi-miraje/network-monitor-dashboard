@@ -29,13 +29,15 @@ TIMEOUT = 0.8
 DROP_STATES = {"offline", "dns"}
 
 
-def tcp_probe(target):
+def tcp_probe(target, timeout=TIMEOUT):
     started = time.monotonic()
     try:
-        with socket.create_connection((target, 443), timeout=TIMEOUT):
-            return {"ok": True, "ms": round((time.monotonic() - started) * 1000, 1), "blocked": False}
+        with socket.create_connection((target, 443), timeout=timeout):
+            return {"ok": True, "ms": round((time.monotonic() - started) * 1000, 1), "blocked": False, "error": None, "errno": None}
     except OSError as exc:
-        return {"ok": False, "ms": None, "blocked": exc.errno in (errno.EPERM, errno.EACCES)}
+        return {"ok": False, "ms": None, "blocked": exc.errno in (errno.EPERM, errno.EACCES),
+                "error": type(exc).__name__, "errno": exc.errno,
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 1)}
 
 
 def topology():
@@ -119,10 +121,10 @@ def classify(checks, gateway_ok, dns_ok, route):
     if route.get("route_known") and not route.get("interface"):
         return "offline", None, "No network connection", "The Mac has no active default route, and both internet checks failed."
     if gateway_ok is True:
-        return "offline", None, "Internet unreachable", "Your router responded, but both internet checks failed. The problem is likely beyond your Mac's local connection."
+        return "offline", None, "Reachability checks failed", "Both internet TCP checks failed within the 800 ms limit. A router ping answered, but this does not rule out this Mac, Wi-Fi, router forwarding, or the ISP. Work VPN status is not measured."
     if gateway_ok is False:
-        return "offline", None, "Connection dropped", "The router and both internet checks did not respond. This may be a local connection or router problem; some routers also block ping."
-    return "offline", None, "Internet unreachable", "Both internet checks failed. The router could not be checked, so the cause is unknown."
+        return "offline", None, "Local path or internet issue", "The router ping and both internet TCP checks failed. This Mac, Wi-Fi, or the router may be involved; ping filtering is also possible. The ISP and work VPN are not isolated by these checks."
+    return "offline", None, "Reachability checks failed", "Both internet TCP checks failed within the 800 ms limit. The router could not be checked. This does not identify the faulty device or prove an ISP outage."
 
 
 class Store:
@@ -148,6 +150,10 @@ class Store:
             CREATE INDEX IF NOT EXISTS idx_events_start ON events(start DESC);
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(samples)")}
+        if "evidence" not in columns:
+            self.db.execute("ALTER TABLE samples ADD COLUMN evidence TEXT")
+        self.db.execute("CREATE TABLE IF NOT EXISTS diagnostics (ts REAL PRIMARY KEY, completed REAL NOT NULL, evidence TEXT NOT NULL)")
         self.db.execute("PRAGMA optimize")
         self.db.commit()
         self.last = self.db.execute("SELECT ts FROM samples ORDER BY ts DESC LIMIT 1").fetchone()
@@ -159,7 +165,7 @@ class Store:
         self.last_prune = 0
         self.started = time.time()
 
-    def record(self, ts, state, latency, reason, detail, gateway_ok=None, dns_ok=None, successes=0):
+    def record(self, ts, state, latency, reason, detail, gateway_ok=None, dns_ok=None, successes=0, evidence=None):
         with self.lock, self.db:
             if self.last_ts is not None and ts - self.last_ts > 3.5:
                 self.db.execute("UPDATE events SET end=?, end_known=0 WHERE end IS NULL", (self.last_ts + INTERVAL,))
@@ -175,12 +181,45 @@ class Store:
                     self.db.execute("INSERT INTO events(start,kind,reason,detail) VALUES (?,?,?,?)", (ts, state, reason, detail))
             elif current is not None:
                 self.db.execute("UPDATE events SET end=?, end_known=? WHERE id=?", (ts, int(state == "online"), current["id"]))
-            self.db.execute("INSERT INTO samples VALUES (?,?,?,?,?,?,?,?)", (ts, state, latency, gateway_ok, dns_ok, reason, detail, successes))
+            self.db.execute("INSERT INTO samples (ts,state,latency,gateway_ok,dns_ok,reason,detail,successes,evidence) VALUES (?,?,?,?,?,?,?,?,?)",
+                            (ts, state, latency, gateway_ok, dns_ok, reason, detail, successes, json.dumps(evidence) if evidence else None))
             self.last_ts = ts
             if ts - self.last_prune >= 3600:
                 # Keep a week of second-by-second samples. Events are never pruned.
                 self.db.execute("DELETE FROM samples WHERE ts < ?", (ts - 7 * 86400,))
+                self.db.execute("DELETE FROM diagnostics WHERE completed < ?", (ts - 7 * 86400,))
                 self.last_prune = ts
+
+    def record_diagnostic(self, ts, evidence):
+        with self.lock, self.db:
+            self.db.execute("INSERT OR REPLACE INTO diagnostics VALUES (?,?,?)",
+                            (ts, time.time(), json.dumps(evidence)))
+
+    def event_evidence(self, event):
+        result = dict(event)
+        if result["kind"] != "offline":
+            return result
+        # Keep historical measurements intact, but correct their overconfident interpretation.
+        if "likely beyond" in result["detail"]:
+            result["reason"] = "Reachability checks failed"
+            result["detail"] = "Both internet TCP checks failed within the 800 ms limit. A router ping answered. These historical checks cannot distinguish this Mac, Wi-Fi, router forwarding, or ISP trouble; they did not measure the work VPN."
+        end = result["end"] or time.time()
+        checks = self.db.execute("SELECT ts,completed,evidence FROM diagnostics WHERE ts<=? AND completed>=? ORDER BY ts LIMIT 8",
+                                 (end, result["start"])).fetchall()
+        result["diagnostics"] = [{"ts": row["ts"], "completed": row["completed"], **json.loads(row["evidence"])} for row in checks]
+        raw = self.db.execute("SELECT ts,evidence FROM samples WHERE ts>=? AND ts<? AND state='offline' AND evidence IS NOT NULL ORDER BY ts LIMIT 5",
+                              (result["start"], end)).fetchall()
+        result["probe_evidence"] = [{"ts": row["ts"], **json.loads(row["evidence"])} for row in raw]
+        if result["probe_evidence"]:
+            errors = sorted({check.get("error", "Unknown") or "Unknown" for row in result["probe_evidence"] for check in row["checks"] if not check["ok"]})
+            result["detail"] += " Recorded errors: " + ", ".join(errors) + "."
+        if checks:
+            tcp = [probe for row in result["diagnostics"] for probe in row["tcp"]]
+            ping = [probe for row in result["diagnostics"] for probe in row["internet_ping"]]
+            successes = sum(bool(probe["ok"]) for probe in tcp)
+            replies = sum(probe["ok"] is True for probe in ping)
+            result["detail"] += " Overlapping diagnostic rounds: %s/%s longer TCP checks succeeded; %s/%s internet pings answered. These checks overlap the event window but may finish after recovery; they do not locate the fault." % (successes, len(tcp), replies, len(ping))
+        return result
 
     def finish(self):
         with self.lock, self.db:
@@ -202,6 +241,7 @@ class Store:
                 FROM samples WHERE ts >= ? GROUP BY CAST(ts / ? AS INTEGER) ORDER BY ts""", (start, step)).fetchall()
             bands = self.db.execute("SELECT * FROM events WHERE start<=? AND (end IS NULL OR end>=?) ORDER BY start", (now, start)).fetchall()
             events = self.db.execute("SELECT * FROM events ORDER BY start DESC, id DESC LIMIT ?", (event_limit,)).fetchall()
+            events = [self.event_evidence(row) for row in events]
             count = self.db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
             drops = self.db.execute("SELECT COUNT(*) FROM events WHERE kind='offline'").fetchone()[0]
             issues = self.db.execute("SELECT COUNT(*) FROM events WHERE kind='dns'").fetchone()[0]
@@ -214,7 +254,7 @@ class Store:
                 "first_seen": min(v for v in (first, earliest_sample, self.started) if v is not None),
                 "window": window, "step": step, "latest": dict(latest) if latest else None,
                 "points": [dict(row) for row in points], "bands": [dict(row) for row in bands],
-                "events": [dict(row) for row in events], "event_count": count,
+                "events": events, "event_count": count,
                 "drop_count": drops, "dns_count": issues,
                 "uptime": round(100 * (stats["good"] or 0) / stats["n"], 2) if stats["n"] else None,
                 "average_latency": round(stats["avg_latency"], 1) if stats["avg_latency"] is not None else None,
@@ -226,6 +266,28 @@ class Monitor:
         self.store = store
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name="network-checks", daemon=True)
+        self.diagnostic_thread = threading.Thread(target=self.run_diagnostics, name="diagnostics", daemon=True)
+
+    def run_diagnostics(self):
+        # A separate pool keeps longer checks from delaying the one-second graph.
+        from diagnostics import ping_probe, interface_status
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5, thread_name_prefix="diagnostic") as pool:
+            while not self.stop.is_set():
+                tick, ts = time.monotonic(), time.time()
+                try:
+                    route = topology()
+                    tcp = [pool.submit(tcp_probe, ip, 3.0) for _, ip in TARGETS]
+                    ping = [pool.submit(ping_probe, ip) for _, ip in TARGETS]
+                    gateway = pool.submit(ping_probe, route.get("gateway"))
+                    evidence = {"tcp_timeout_ms": 3000, "route": route,
+                                "interface": interface_status(route.get("interface")),
+                                "tcp": [{"target": ip, **future.result()} for (_, ip), future in zip(TARGETS, tcp)],
+                                "internet_ping": [{"target": ip, **future.result()} for (_, ip), future in zip(TARGETS, ping)],
+                                "gateway_ping": gateway.result()}
+                    self.store.record_diagnostic(ts, evidence)
+                except Exception:
+                    logging.exception("Diagnostic round failed; primary monitoring continues")
+                self.stop.wait(max(0, 2.0 - (time.monotonic() - tick)))
 
     def run(self):
         route = {}
@@ -252,7 +314,9 @@ class Monitor:
                     route = topology()
                     route_at = ts
                 state, latency, reason, detail = classify(checks, gateway_ok, dns_ok, route)
-                self.store.record(ts, state, latency, reason, detail, gateway_ok, dns_ok, sum(c["ok"] for c in checks))
+                self.store.record(ts, state, latency, reason, detail, gateway_ok, dns_ok, sum(c["ok"] for c in checks),
+                                  {"timeout_ms": 800, "checks": [{"target": ip, **check} for (_, ip), check in zip(TARGETS, checks)],
+                                   "route": route, "dns_checked_at": dns_at})
                 self.stop.wait(max(0, INTERVAL - (time.monotonic() - tick)))
 
 
@@ -336,15 +400,17 @@ def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: monitor.stop.set())
     monitor.thread.start()
+    monitor.diagnostic_thread.start()
     print("Network monitor: http://localhost:%s\nMonitoring continues when Chrome is closed." % args.port, flush=True)
     try:
         while not monitor.stop.is_set():
             server.handle_request()
-            if not monitor.thread.is_alive():
+            if not monitor.thread.is_alive() and not monitor.stop.is_set():
                 raise RuntimeError("Network checks stopped; restart the monitor.")
     finally:
         monitor.stop.set()
         monitor.thread.join(timeout=5)
+        monitor.diagnostic_thread.join(timeout=5)
         store.finish()
         server.server_close()
         pid_path.unlink(missing_ok=True)

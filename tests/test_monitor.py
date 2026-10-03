@@ -25,8 +25,8 @@ class DetectionTests(unittest.TestCase):
 
     def test_router_responds_but_internet_does_not(self):
         state, _, reason, detail = classify([FAIL, FAIL], True, True, {})
-        self.assertEqual((state, reason), ("offline", "Internet unreachable"))
-        self.assertIn("router responded", detail)
+        self.assertEqual((state, reason), ("offline", "Reachability checks failed"))
+        self.assertIn("does not rule out this Mac", detail)
 
     def test_no_default_route(self):
         result = classify([FAIL, FAIL], None, None, {"route_known": True, "interface": None})
@@ -43,7 +43,11 @@ class DetectionTests(unittest.TestCase):
 
     def test_timeout_is_a_failed_probe(self):
         with patch("monitor.socket.create_connection", side_effect=socket.timeout("timeout")):
-            self.assertEqual(tcp_probe("1.1.1.1"), FAIL)
+            result = tcp_probe("1.1.1.1")
+            self.assertFalse(result["ok"])
+            self.assertFalse(result["blocked"])
+            self.assertEqual(result["error"], type(socket.timeout()).__name__)
+            self.assertIn("elapsed_ms", result)
 
 
 class HistoryTests(unittest.TestCase):
@@ -133,6 +137,37 @@ class HistoryTests(unittest.TestCase):
             self.record(second, "offline" if second % 2 else "online")
         self.assertEqual(len(self.store.snapshot(event_limit=50)["events"]), 50)
         self.assertEqual(len(self.store.snapshot(event_limit=150)["events"]), 55)
+
+    def test_diagnostic_evidence_is_correlated_and_old_verdict_is_corrected(self):
+        self.store.record(self.ts, "offline", None, "Internet unreachable",
+                          "Your router responded. The problem is likely beyond your Mac's local connection.",
+                          evidence={"checks": [{"ok": False, "error": "timeout", "target": "1.1.1.1"}]})
+        self.record(1)
+        evidence = {"tcp": [{"ok": True}], "internet_ping": [{"ok": True}]}
+        with self.store.db:
+            self.store.db.execute("INSERT INTO diagnostics VALUES (?,?,?)", (self.ts - .1, self.ts + .9, json.dumps(evidence)))
+            self.store.db.execute("INSERT INTO diagnostics VALUES (?,?,?)", (self.ts - 10, self.ts - 9, json.dumps(evidence)))
+        event = self.store.snapshot()["events"][0]
+        self.assertEqual(len(event["diagnostics"]), 1)
+        self.assertIn("cannot distinguish this Mac", event["detail"])
+        self.assertIn("timeout", event["detail"])
+        self.assertIn("may finish after recovery", event["detail"])
+        self.assertIn("likely beyond", self.store.db.execute("SELECT detail FROM events").fetchone()[0])
+
+    def test_schema_upgrade_preserves_existing_samples(self):
+        import sqlite3
+        path = Path(self.folder.name) / "legacy.sqlite3"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE samples (ts REAL PRIMARY KEY,state TEXT NOT NULL,latency REAL,gateway_ok INTEGER,dns_ok INTEGER,reason TEXT NOT NULL,detail TEXT NOT NULL,successes INTEGER NOT NULL)")
+        conn.execute("INSERT INTO samples VALUES (?,?,?,?,?,?,?,?)", (self.ts,"online",20,1,1,"Connected","Connected",2))
+        conn.commit(); conn.close()
+        upgraded = Store(path)
+        try:
+            self.assertEqual(upgraded.snapshot()["latest"]["latency"], 20)
+            upgraded.record(self.ts + 1, "online", 30, "Connected", "Connected", evidence={"checks": []})
+            self.assertEqual(json.loads(upgraded.snapshot()["latest"]["evidence"]), {"checks": []})
+        finally:
+            upgraded.db.close()
 
     def test_local_http_routes_and_access_restrictions_without_sockets(self):
         Handler = make_handler(self.store, 8787)
