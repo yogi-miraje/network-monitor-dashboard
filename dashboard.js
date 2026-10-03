@@ -38,6 +38,7 @@
     $("uptime-window").textContent=`· ${{300:"5 min",900:"15 min",3600:"1 hr",86400:"24 hr"}[data.window]}`;
     $("drops").textContent=String(data.drop_count);
     $("event-count").textContent=String(data.event_count);
+    $("history-note").textContent=range.selectedOptions[0].text;
     $("since").textContent=`Monitoring since ${date(data.first_seen)}, ${time(data.first_seen)}`;
     $("check-status").replaceChildren(el("span","","live-dot"),document.createTextNode(state==="blocked"?"Checks blocked":fresh?"Checks every second":"Waiting for a fresh check"));
     $("check-status").firstChild.style.background=state==="offline"?colors.red:state==="dns"?colors.amber:state==="blocked"||state==="waiting"?colors.gray:colors.green;
@@ -59,8 +60,8 @@
     const body=$("events-body");body.replaceChildren();
     $("events-table").hidden=!data.events.length;
     $("events-empty").hidden=Boolean(data.events.length);
-    $("events-empty").querySelector("h3").textContent="No check failures recorded";
-    $("events-empty").querySelector("p").textContent="Failed checks and monitoring gaps appear here. Causes need supporting evidence.";
+    $("events-empty").querySelector("h3").textContent="No events in this time range";
+    $("events-empty").querySelector("p").textContent=`No events overlap ${range.selectedOptions[0].text.toLowerCase()}. Choose a longer range to see earlier events.`;
     for(const event of data.events){
       const row=el("tr");
       const started=el("td",time(event.start,true));started.append(el("span",date(event.start),"event-date"));
@@ -75,7 +76,7 @@
       status.append(el("span",label,`badge ${badge}`));row.append(started,elapsed,what,status);body.append(row);
     }
     $("load-more").hidden=data.events.length>=data.event_count;
-    $("load-more").textContent=`Show older events (${data.event_count-data.events.length} more)`;
+    $("load-more").textContent=`Show more in this range (${data.event_count-data.events.length} more)`;
   }
 
   function geometry() {
@@ -149,7 +150,7 @@
       if(id===requestId)render(next);
     }catch(error){if(id===requestId)stopped();}
   }
-  range.addEventListener("change",()=>{hover=null;$("tooltip").hidden=true;refresh();});
+  range.addEventListener("change",()=>{eventLimit=50;hover=null;$("tooltip").hidden=true;refresh();});
   $("load-more").addEventListener("click",()=>{eventLimit+=100;refresh();});
   new ResizeObserver(()=>draw()).observe($("chart-wrap"));
   document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh();});

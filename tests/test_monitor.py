@@ -165,7 +165,24 @@ class HistoryTests(unittest.TestCase):
         self.store.record(old, "offline", None, "Old drop", "Old event")
         self.store.record(self.ts, "online", 25, "Connected", "Recovered")
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM samples").fetchone()[0], 1)
-        self.assertEqual(self.store.snapshot()["drop_count"], 1)
+        self.assertEqual(self.store.snapshot()["drop_count"], 0)
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM events WHERE kind='offline'").fetchone()[0], 1)
+
+    def test_time_range_filters_events_counts_and_preserves_overlapping_events(self):
+        now = time.time()
+        with self.store.db:
+            for begin, end, kind in [(now-800,now-700,"offline"), (now-350,now-290,"offline"), (now-100,now-90,"dns"), (now-900,None,"offline"), (now+100,now+110,"offline")]:
+                self.store.db.execute("INSERT INTO events(start,end,kind,reason,detail) VALUES (?,?,?,?,?)", (begin,end,kind,"Test","Test"))
+        with patch("monitor.time.time", return_value=now):
+            short = self.store.snapshot(300, event_limit=1)
+            long = self.store.snapshot(900)
+        self.assertEqual(short["event_count"], 3)
+        self.assertEqual(short["drop_count"], 2)
+        self.assertEqual(short["dns_count"], 1)
+        self.assertEqual(len(short["events"]), 1)
+        self.assertEqual(len(short["bands"]), 3)
+        self.assertEqual(long["event_count"], 4)
+        self.assertEqual({e["id"] for e in long["events"]}, {e["id"] for e in long["bands"]})
 
     def test_older_events_remain_retrievable(self):
         for second in range(110):

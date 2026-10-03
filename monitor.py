@@ -298,11 +298,11 @@ class Store:
             points = [{**dict(point), "smooth": smoothed.get(int(point["ts"] / step))} for point in points]
             loss = packet_loss(self.db.execute("SELECT ts,completed,evidence FROM diagnostics WHERE ts>=? ORDER BY ts", (now - 60,)).fetchall(), now)
             bands = self.db.execute("SELECT * FROM events WHERE start<=? AND (end IS NULL OR end>=?) ORDER BY start", (now, start)).fetchall()
-            events = self.db.execute("SELECT * FROM events ORDER BY start DESC, id DESC LIMIT ?", (event_limit,)).fetchall()
+            events = self.db.execute("SELECT * FROM events WHERE start<=? AND (end IS NULL OR end>=?) ORDER BY start DESC, id DESC LIMIT ?", (now, start, event_limit)).fetchall()
             events = [self.event_evidence(row) for row in events]
-            count = self.db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-            drops = self.db.execute("SELECT COUNT(*) FROM events WHERE kind='offline'").fetchone()[0]
-            issues = self.db.execute("SELECT COUNT(*) FROM events WHERE kind='dns'").fetchone()[0]
+            count = len(bands)
+            drops = sum(row["kind"] == "offline" for row in bands)
+            issues = sum(row["kind"] == "dns" for row in bands)
             stats = self.db.execute("""SELECT COUNT(*) AS n, SUM(state='online') AS good,
                 SUM(state='offline') AS bad, SUM(state='dns') AS dns,
                 AVG(latency) AS avg_latency FROM samples WHERE ts>=? AND state!='blocked'""", (start,)).fetchone()
