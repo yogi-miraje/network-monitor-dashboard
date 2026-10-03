@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """A loopback-only network monitor, using only the Python standard library."""
 import argparse
+from collections import deque
+from statistics import median
 import concurrent.futures
 import errno
 import fcntl
@@ -127,6 +129,51 @@ def classify(checks, gateway_ok, dns_ok, route):
     return "offline", None, "Reachability checks failed", "Both internet TCP checks failed within the 800 ms limit. The router could not be checked. This does not identify the faulty device or prove an ISP outage."
 
 
+def smooth_latency(rows, step, start):
+    """Trailing ten-second median, reset at failures and monitoring gaps."""
+    history = deque()
+    buckets = {}
+    previous = None
+    for row in rows:
+        ts = row["ts"]
+        if previous is not None and ts - previous > 3.5:
+            history.clear()
+        while history and history[0][0] <= ts - 10:
+            history.popleft()
+        if row["state"] in ("offline", "blocked") or row["latency"] is None:
+            history.clear()
+            value = None
+        else:
+            history.append((ts, row["latency"]))
+            value = median(item[1] for item in history)
+        if ts >= start:
+            buckets[int(ts / step)] = value
+        previous = ts
+    return buckets
+
+
+def packet_loss(rows, now):
+    targets = {"Router": [], "Cloudflare": [], "Google": []}
+    latest = None
+    for row in rows:
+        if row["ts"] < now - 60 or row["completed"] > now:
+            continue
+        evidence = json.loads(row["evidence"])
+        latest = max(latest or row["completed"], row["completed"])
+        targets["Router"].append(evidence.get("gateway_ping", {}).get("ok"))
+        probes = {probe["target"]: probe.get("ok") for probe in evidence.get("internet_ping", [])}
+        for name, ip in TARGETS:
+            targets[name].append(probes.get(ip))
+    fresh = latest is not None and now - latest < 10
+    return {"window_seconds": 60, "fresh": fresh, "last_check": latest,
+            "targets": [{"name": name, "sent": sum(value is not None for value in values),
+                         "lost": sum(value is False for value in values),
+                         "unknown": sum(value is None for value in values),
+                         "percent": round(100 * sum(value is False for value in values) / sum(value is not None for value in values), 1)
+                         if fresh and any(value is not None for value in values) else None}
+                        for name, values in targets.items()]}
+
+
 class Store:
     def __init__(self, path):
         self.path = Path(path)
@@ -239,6 +286,10 @@ class Store:
                      WHEN SUM(state='dns')>0 THEN 'dns'
                      WHEN SUM(state='blocked')>0 THEN 'blocked' ELSE 'online' END AS state
                 FROM samples WHERE ts >= ? GROUP BY CAST(ts / ? AS INTEGER) ORDER BY ts""", (start, step)).fetchall()
+            raw = self.db.execute("SELECT ts,state,latency FROM samples WHERE ts>=? ORDER BY ts", (start - 10,)).fetchall()
+            smoothed = smooth_latency(raw, step, start)
+            points = [{**dict(point), "smooth": smoothed.get(int(point["ts"] / step))} for point in points]
+            loss = packet_loss(self.db.execute("SELECT ts,completed,evidence FROM diagnostics WHERE ts>=? ORDER BY ts", (now - 60,)).fetchall(), now)
             bands = self.db.execute("SELECT * FROM events WHERE start<=? AND (end IS NULL OR end>=?) ORDER BY start", (now, start)).fetchall()
             events = self.db.execute("SELECT * FROM events ORDER BY start DESC, id DESC LIMIT ?", (event_limit,)).fetchall()
             events = [self.event_evidence(row) for row in events]
@@ -258,6 +309,7 @@ class Store:
                 "drop_count": drops, "dns_count": issues,
                 "uptime": round(100 * (stats["good"] or 0) / stats["n"], 2) if stats["n"] else None,
                 "average_latency": round(stats["avg_latency"], 1) if stats["avg_latency"] is not None else None,
+                "smoothing_seconds": 10, "packet_loss": loss,
                 "interval": INTERVAL, "targets": [name for name, _ in TARGETS]}
 
 

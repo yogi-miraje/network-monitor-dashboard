@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from monitor import Store, classify, make_handler, tcp_probe
+from monitor import Store, classify, make_handler, tcp_probe, smooth_latency, packet_loss
 
 
 OK = {"ok": True, "ms": 25.0, "blocked": False}
@@ -48,6 +48,39 @@ class DetectionTests(unittest.TestCase):
             self.assertFalse(result["blocked"])
             self.assertEqual(result["error"], type(socket.timeout()).__name__)
             self.assertIn("elapsed_ms", result)
+
+
+class DisplayMetricsTests(unittest.TestCase):
+    def test_median_removes_single_spike_and_keeps_failure(self):
+        rows = [{"ts": t, "state": "online", "latency": 20 if t != 5 else 900} for t in range(10)]
+        rows += [{"ts": 10, "state": "offline", "latency": None}, {"ts": 11, "state": "online", "latency": 80}]
+        values = smooth_latency(rows, 1, 0)
+        self.assertEqual(values[5], 20)
+        self.assertEqual(values[9], 20)
+        self.assertIsNone(values[10])
+        self.assertEqual(values[11], 80)
+        self.assertEqual(rows[5]["latency"], 900)
+
+    def test_time_window_and_gap_reset(self):
+        rows = [{"ts": t, "state": "online", "latency": 20 if t < 10 else 80} for t in range(20)]
+        rows.append({"ts": 40, "state": "online", "latency": 100})
+        values = smooth_latency(rows, 1, 5)
+        self.assertNotIn(4, values)
+        self.assertEqual(values[19], 80)
+        self.assertEqual(values[40], 100)
+
+    def test_packet_loss_excludes_unknown_old_and_stale_measurements(self):
+        def row(ts, router, cloud, google):
+            return {"ts": ts, "completed": ts + .5, "evidence": json.dumps({"gateway_ping": {"ok": router}, "internet_ping": [{"target": "1.1.1.1", "ok": cloud}, {"target": "8.8.8.8", "ok": google}]})}
+        rows = [row(20, False, False, False), row(96, True, False, None), row(98, True, True, None)]
+        stats = packet_loss(rows, 100)
+        router, cloud, google = stats["targets"]
+        self.assertEqual((router["percent"], router["sent"]), (0, 2))
+        self.assertEqual((cloud["percent"], cloud["lost"]), (50, 1))
+        self.assertIsNone(google["percent"])
+        self.assertEqual(google["unknown"], 2)
+        self.assertTrue(all(t["percent"] is None for t in packet_loss(rows, 120)["targets"]))
+        self.assertTrue(all(t["percent"] is None for t in packet_loss([], 100)["targets"]))
 
 
 class HistoryTests(unittest.TestCase):

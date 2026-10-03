@@ -15,6 +15,7 @@
     $("connection-title").textContent="Monitor is stopped";
     $("connection-detail").textContent=`Double-click Start.command to start monitoring, then open ${location.host||"localhost:8787"} in Chrome.`;
     $("latency").textContent="—";
+    $("packet-loss").replaceChildren();$("loss-note").textContent="Monitor stopped — no current packet-loss reading";
     $("check-status").textContent="Waiting for the local monitor";
     $("chart-empty").hidden=Boolean(data?.points?.length);
     $("chart-empty").firstElementChild.textContent="Start the monitor to begin collecting data";
@@ -43,6 +44,14 @@
     $("chart-empty").hidden=data.points.length>0;
     if(!data.points.length)$("chart-empty").firstElementChild.textContent="The graph begins with your first connection check";
     if(state!==lastStatus){$("announcement").textContent=titles[state];lastStatus=state;}
+    const loss=$("packet-loss");loss.replaceChildren();
+    for(const target of data.packet_loss?.targets??[]){
+      const item=el("span",undefined,"loss-target");
+      item.append(document.createTextNode(`${target.name} `),el("strong",target.percent==null?"—":`${target.percent.toFixed(1)}%`));
+      item.title=`${target.lost} unanswered / ${target.sent} measured pings; ${target.unknown} unavailable checks. Missing or blocked checks are excluded.`;
+      loss.append(item);
+    }
+    $("loss-note").textContent=data.packet_loss?.fresh?"Unanswered pings · every 2 seconds · loss or filtering":"Waiting for fresh ping measurements";
     renderEvents();draw();
   }
 
@@ -73,7 +82,7 @@
     const rect=canvas.getBoundingClientRect(), width=Math.max(1,rect.width), height=Math.max(1,rect.height);
     const left=51,right=17,top=22,bottom=36;
     const end=data?.now??Date.now()/1000, start=end-Number(range.value);
-    const maxLatency=Math.max(0,...(data?.points??[]).map(p=>p.high??p.latency??0));
+    const maxLatency=Math.max(0,...(data?.points??[]).map(p=>p.smooth??0));
     const ymax=Math.max(100,Math.ceil(maxLatency/50)*50);
     return {width,height,left,right,top,bottom,start,end,ymax,x:ts=>left+(ts-start)/(end-start)*(width-left-right),y:ms=>height-bottom-ms/ymax*(height-top-bottom)};
   }
@@ -91,24 +100,23 @@
     for(const band of data.bands){const x1=g.x(Math.max(g.start,band.start)),x2=g.x(Math.min(g.end,band.end??g.end));const w=Math.max(3,x2-x1);ctx.fillStyle=band.kind==="pause"?"#8e9aa613":band.kind==="dns"?"#eebc6815":"#ff777f19";ctx.fillRect(x1,g.top,w,g.height-g.top-g.bottom);ctx.fillStyle=band.kind==="pause"?"#8e9aa66b":band.kind==="dns"?colors.amber:colors.red;ctx.fillRect(x1,g.height-g.bottom-4,w,4);}
     const segments=[];let segment=[];let previous=null;
     for(const point of data.points){
-      const broken=point.state==="offline"||point.state==="blocked"||point.latency==null||(previous&&point.ts-previous.ts>data.step*2.5);
+      const broken=point.state==="offline"||point.state==="blocked"||point.smooth==null||(previous&&point.ts-previous.ts>data.step*2.5);
       if(broken&&segment.length){segments.push(segment);segment=[];}
-      if(point.latency!=null&&point.state!=="offline"&&point.state!=="blocked")segment.push(point);
+      if(point.smooth!=null&&point.state!=="offline"&&point.state!=="blocked")segment.push(point);
       previous=point;
     }
     if(segment.length)segments.push(segment);
     const gradient=ctx.createLinearGradient(0,g.top,0,g.height-g.bottom);gradient.addColorStop(0,"#5dd6a529");gradient.addColorStop(1,"#5dd6a500");
     for(const part of segments){
       const first=part[0],last=part[part.length-1];
-      ctx.beginPath();ctx.moveTo(g.x(first.ts),g.height-g.bottom);for(const p of part)ctx.lineTo(g.x(p.ts),g.y(p.latency));ctx.lineTo(g.x(last.ts),g.height-g.bottom);ctx.closePath();ctx.fillStyle=gradient;ctx.fill();
-      ctx.beginPath();part.forEach((p,i)=>i?ctx.lineTo(g.x(p.ts),g.y(p.latency)):ctx.moveTo(g.x(p.ts),g.y(p.latency)));ctx.strokeStyle=colors.green;ctx.lineWidth=1.75;ctx.lineJoin="round";ctx.stroke();
-      ctx.beginPath();ctx.arc(g.x(last.ts),g.y(last.latency),3.5,0,Math.PI*2);ctx.fillStyle=colors.green;ctx.fill();
-      if(data.step>1){ctx.strokeStyle="#5dd6a543";ctx.lineWidth=1;for(const p of part){if(p.low!=null&&p.high!=null){ctx.beginPath();ctx.moveTo(g.x(p.ts),g.y(p.low));ctx.lineTo(g.x(p.ts),g.y(p.high));ctx.stroke();}}}
+      ctx.beginPath();ctx.moveTo(g.x(first.ts),g.height-g.bottom);for(const p of part)ctx.lineTo(g.x(p.ts),g.y(p.smooth));ctx.lineTo(g.x(last.ts),g.height-g.bottom);ctx.closePath();ctx.fillStyle=gradient;ctx.fill();
+      ctx.beginPath();part.forEach((p,i)=>i?ctx.lineTo(g.x(p.ts),g.y(p.smooth)):ctx.moveTo(g.x(p.ts),g.y(p.smooth)));ctx.strokeStyle=colors.green;ctx.lineWidth=1.75;ctx.lineJoin="round";ctx.stroke();
+      ctx.beginPath();ctx.arc(g.x(last.ts),g.y(last.smooth),3.5,0,Math.PI*2);ctx.fillStyle=colors.green;ctx.fill();
     }
     if(hover){const x=g.x(hover.ts);ctx.strokeStyle="#94a3b175";ctx.lineWidth=1;ctx.setLineDash([3,4]);ctx.beginPath();ctx.moveTo(x,g.top);ctx.lineTo(x,g.height-g.bottom);ctx.stroke();ctx.setLineDash([]);}
     ctx.restore();
     const sampled=data.points.length;
-    canvas.setAttribute("aria-label",`Response time over ${range.selectedOptions[0].text.toLowerCase()}. ${sampled} graph points. ${data.bands.filter(e=>e.kind==="offline").length} drops in view. Current response time ${data.latest?.latency==null?"unavailable":Math.round(data.latest.latency)+" milliseconds"}.`);
+    canvas.setAttribute("aria-label",`10-second median response time over ${range.selectedOptions[0].text.toLowerCase()}. ${sampled} graph points. ${data.bands.filter(e=>e.kind==="offline").length} check failures in view. Current response time ${data.latest?.latency==null?"unavailable":Math.round(data.latest.latency)+" milliseconds"}.`);
   }
 
   canvas.addEventListener("pointermove",event=>{
@@ -118,7 +126,7 @@
     let nearest=data.points[0];for(const point of data.points)if(Math.abs(point.ts-ts)<Math.abs(nearest.ts-ts))nearest=point;
     if(Math.abs(nearest.ts-ts)>Math.max(data.step*2,Number(range.value)/90)){$("tooltip").hidden=true;hover=null;draw();return;}
     hover=nearest;const tip=$("tooltip");const issue=data.bands.find(e=>nearest.ts>=e.start&&nearest.ts<=(e.end??data.now));
-    tip.replaceChildren(el("small",`${date(nearest.ts)} · ${time(nearest.ts,true)}`),document.createTextNode(issue?.reason??(nearest.latency==null?"No response":`${Math.round(nearest.latency)} ms`)));
+    tip.replaceChildren(el("small",`${date(nearest.ts)} · ${time(nearest.ts,true)}`),document.createTextNode(issue?.reason??(nearest.smooth==null?"No response":`${Math.round(nearest.smooth)} ms · 10-second median`)));
     tip.hidden=false;tip.style.left=`${Math.max(0,Math.min(g.width-tip.offsetWidth,px+12))}px`;tip.style.top=`${Math.max(0,event.clientY-rect.top-55)}px`;draw();
   });
   canvas.addEventListener("pointerleave",()=>{hover=null;$("tooltip").hidden=true;draw();});
